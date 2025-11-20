@@ -4,6 +4,7 @@ from oauth2client.service_account import ServiceAccountCredentials
 import pandas as pd
 from datetime import datetime
 import json
+import io
 
 st.set_page_config(
     page_title="Octa Services - Factory Tracker",
@@ -111,6 +112,34 @@ st.markdown("""
         background-color: #1A1A1A;
         color: #FFFFFF !important;
     }
+    
+    .stDownloadButton>button {
+        background-color: #FFFFFF;
+        color: #000000 !important;
+        border: 2px solid #FFFFFF;
+        font-weight: bold;
+    }
+    .stDownloadButton>button:hover {
+        background-color: #CCCCCC;
+        border: 2px solid #CCCCCC;
+        color: #000000 !important;
+    }
+    .stDownloadButton>button * {
+        color: #000000 !important;
+    }
+    .stDownloadButton>button p {
+        color: #000000 !important;
+    }
+    .stDownloadButton>button span {
+        color: #000000 !important;
+    }
+    [data-testid="stDownloadButton"] button {
+        background-color: #FFFFFF !important;
+        color: #000000 !important;
+    }
+    [data-testid="stDownloadButton"] button p {
+        color: #000000 !important;
+    }
     </style>
 """, unsafe_allow_html=True)
 
@@ -157,14 +186,22 @@ def show_floating_logos():
         <div class="floating-logo" style="left: 95%; width: 80px; height: 80px; animation-delay: 1.8s;"></div>
     """, unsafe_allow_html=True)
 
-SITES = ["Faragallah", "Sakr", "X", "Y"]
+SITES = ["Faragallah", "Sakr-old", "Sakr-new", "Arab Daily", "National Foods"]
 
 ENGINEERS = [
-    "Ahmed Hassan",
-    "Mohamed Ali",
-    "Khaled Ibrahim",
-    "Omar Mahmoud",
-    "Youssef Ahmed",
+    "Eng. Reda Abdelazem",
+    "Eng. Raafat Assem",
+    "Eng. Mohammed Ezzat",
+    "Eng. Adel Magdy",
+    "Eng. Mohammed Khaled",
+    "Eng. Khaled Mostafa",
+    "Eng. Ibrahim Elgarhy",
+    "Eng. Abdullah Hashim",
+    "Eng. Mohammed Heikel",
+    "Eng. Hesham Abdelaziz",
+    "Eng. Youssef Ossama",
+    "Tech. Gomaa",
+    "Tech. Ahmed Ali",
 ]
 
 LINES = ["Line 3", "Line 7", "Line 9", "Line 10", "Line 12", "Line 13"]
@@ -248,6 +285,42 @@ def update_problem(row_index, updates, site):
         st.error(f"❌ Error updating problem: {str(e)}")
         raise e
 
+def delete_problem(row_index, site):
+    try:
+        sheet = get_google_sheet(site)
+        sheet.delete_rows(row_index + 2)
+        st.cache_resource.clear()
+    except Exception as e:
+        st.error(f"❌ Error deleting problem: {str(e)}")
+        raise e
+
+def extract_unavailable_parts(df):
+    """Extract all spare parts that are not in stock"""
+    unavailable_parts = []
+    
+    for _, row in df.iterrows():
+        if row['Spare_Parts_Data'] != "N/A" and row['Spare_Parts_Data'] != "":
+            parts = row['Spare_Parts_Data'].split(" | ")
+            for part in parts:
+                try:
+                    part_info = part.split(":")
+                    if len(part_info) >= 4:
+                        part_number = part_info[0]
+                        part_name = part_info[1]
+                        quantity = part_info[2]
+                        stock_status = part_info[3]
+                        
+                        if "No" in stock_status:
+                            unavailable_parts.append({
+                                'Part_Number': part_number,
+                                'Part_Name': part_name,
+                                'Quantity': quantity
+                            })
+                except:
+                    continue
+    
+    return pd.DataFrame(unavailable_parts)
+
 if 'spare_parts' not in st.session_state:
     st.session_state.spare_parts = []
 if 'troubleshooting_steps' not in st.session_state:
@@ -269,6 +342,7 @@ page = st.sidebar.radio("Navigation",
                         ["📊 Dashboard", 
                          "➕ Submit New Problem", 
                          "✅ Update Problem Status",
+                         "✏️ Edit/Delete Entry",
                          "📜 History"])
 
 st.sidebar.markdown("---")
@@ -314,12 +388,94 @@ if page == "📊 Dashboard":
                 filtered_df = filtered_df[filtered_df['Status'] == filter_status]
             
             st.markdown("---")
+            
+            # Check for overdue problems
+            overdue_problems = []
+            today = datetime.now().date()
+            
+            for idx, row in filtered_df.iterrows():
+                try:
+                    due_date = datetime.strptime(row['Expected_Due_Date'], "%d/%m/%Y").date()
+                    if due_date < today:
+                        days_overdue = (today - due_date).days
+                        overdue_problems.append({
+                            'ID': row['Submission_ID'],
+                            'Line': row['Line_Number'],
+                            'Task': row['Task'][:50] + "..." if len(row['Task']) > 50 else row['Task'],
+                            'Days_Overdue': days_overdue,
+                            'Priority': row['Priority'],
+                            'Expected_Due': row['Expected_Due_Date']
+                        })
+                except:
+                    continue
+            
+            # Show overdue warnings
+            if overdue_problems:
+                st.error(f"🚨 **URGENT: {len(overdue_problems)} OVERDUE PROBLEMS!**")
+                overdue_df = pd.DataFrame(overdue_problems)
+                overdue_df = overdue_df.sort_values('Days_Overdue', ascending=False)
+                st.dataframe(overdue_df, use_container_width=True, hide_index=True)
+                st.markdown("---")
+            
             st.subheader(f"🔧 ACTIVE PROBLEMS ({len(filtered_df)})")
             
             if filtered_df.empty:
                 st.info("No problems match your filters.")
             else:
-                st.dataframe(filtered_df, use_container_width=True, hide_index=True)
+                # Add Overdue Status column to filtered_df
+                filtered_display = filtered_df.copy()
+                filtered_display['Overdue_Status'] = ''
+                
+                for idx, row in filtered_display.iterrows():
+                    try:
+                        due_date = datetime.strptime(row['Expected_Due_Date'], "%d/%m/%Y").date()
+                        if due_date < today:
+                            days_overdue = (today - due_date).days
+                            filtered_display.at[idx, 'Overdue_Status'] = f"⚠️ {days_overdue} days overdue"
+                        elif due_date == today:
+                            filtered_display.at[idx, 'Overdue_Status'] = "⏰ Due Today"
+                        else:
+                            days_remaining = (due_date - today).days
+                            if days_remaining <= 2:
+                                filtered_display.at[idx, 'Overdue_Status'] = f"🔔 Due in {days_remaining} days"
+                            else:
+                                filtered_display.at[idx, 'Overdue_Status'] = "✅ On Track"
+                    except:
+                        filtered_display.at[idx, 'Overdue_Status'] = "❓ Unknown"
+                
+                st.dataframe(filtered_display, use_container_width=True, hide_index=True)
+                
+                # Download active problems as CSV
+                csv = filtered_df.to_csv(index=False)
+                st.download_button(
+                    label="📥 Download Active Problems (CSV)",
+                    data=csv,
+                    file_name=f"{selected_site}_active_problems_{datetime.now().strftime('%Y%m%d')}.csv",
+                    mime="text/csv",
+                    use_container_width=True
+                )
+            
+            # Extract and display unavailable spare parts
+            st.markdown("---")
+            st.subheader("🔧 SPARE PARTS NOT AVAILABLE")
+            
+            unavailable_df = extract_unavailable_parts(filtered_df)
+            
+            if unavailable_df.empty:
+                st.success("✅ All required spare parts are available!")
+            else:
+                st.warning(f"⚠️ {len(unavailable_df)} spare parts are not available")
+                st.dataframe(unavailable_df, use_container_width=True, hide_index=True)
+                
+                # Download unavailable parts as CSV
+                csv_unavailable = unavailable_df.to_csv(index=False)
+                st.download_button(
+                    label="📥 Download Unavailable Spare Parts (CSV)",
+                    data=csv_unavailable,
+                    file_name=f"{selected_site}_unavailable_parts_{datetime.now().strftime('%Y%m%d')}.csv",
+                    mime="text/csv",
+                    use_container_width=True
+                )
 
 elif page == "➕ Submit New Problem":
     st.title(f"➕ SUBMIT NEW PROBLEM - {selected_site.upper()}")
@@ -488,8 +644,8 @@ elif page == "✅ Update Problem Status":
                 
                 with st.form("update_form"):
                     new_status = st.selectbox("New Status", STATUSES)
-                    assigned_engineer = st.text_input("Assigned Engineer Name *", 
-                                                 value=problem_row['Assigned_Engineer'] if problem_row['Assigned_Engineer'] else "")
+                    assigned_engineer = st.selectbox("Assigned Engineer *", ENGINEERS,
+                                                    index=ENGINEERS.index(problem_row['Assigned_Engineer']) if problem_row['Assigned_Engineer'] in ENGINEERS else 0)
                     
                     if new_status == "🟢 RESOLVED":
                         date_resolved = st.date_input("Date Resolved *", value=datetime.now())
@@ -520,6 +676,158 @@ elif page == "✅ Update Problem Status":
                             show_floating_logos()
                             st.rerun()
 
+elif page == "✏️ Edit/Delete Entry":
+    st.title(f"✏️ EDIT/DELETE ENTRY - {selected_site.upper()}")
+    st.markdown("---")
+    
+    df = load_data(selected_site)
+    
+    if df.empty:
+        st.warning("No problems recorded yet.")
+    else:
+        st.subheader("Select Entry to Edit or Delete")
+        
+        # Show all entries (not just active ones)
+        problem_options = [f"ID #{row['Submission_ID']} - {row['Line_Number']} - {row['Status']} - {row['Task'][:40]}..." 
+                         for _, row in df.iterrows()]
+        
+        selected_problem = st.selectbox("Choose Entry", problem_options)
+        
+        if selected_problem:
+            problem_id = int(selected_problem.split("#")[1].split(" -")[0])
+            problem_row = df[df['Submission_ID'] == problem_id].iloc[0]
+            problem_index = df[df['Submission_ID'] == problem_id].index[0]
+            
+            st.markdown("---")
+            
+            tab1, tab2 = st.tabs(["✏️ Edit Entry", "🗑️ Delete Entry"])
+            
+            with tab1:
+                st.subheader("Edit Entry Details")
+                
+                with st.form("edit_form"):
+                    col1, col2 = st.columns(2)
+                    
+                    with col1:
+                        edit_line = st.selectbox("Line Number *", LINES, 
+                                                index=LINES.index(problem_row['Line_Number']) if problem_row['Line_Number'] in LINES else 0)
+                        
+                        # Parse existing date
+                        try:
+                            existing_date_submitted = datetime.strptime(problem_row['Date_Submitted'], "%d/%m/%Y")
+                        except:
+                            existing_date_submitted = datetime.now()
+                        edit_date_submitted = st.date_input("Date Submitted *", value=existing_date_submitted)
+                        
+                        try:
+                            existing_due_date = datetime.strptime(problem_row['Expected_Due_Date'], "%d/%m/%Y")
+                        except:
+                            existing_due_date = datetime.now()
+                        edit_expected_due = st.date_input("Expected Due Date *", value=existing_due_date)
+                        
+                        edit_submitted_by = st.selectbox("Submitted By *", ENGINEERS,
+                                                        index=ENGINEERS.index(problem_row['Submitted_By_Engineer']) if problem_row['Submitted_By_Engineer'] in ENGINEERS else 0)
+                        
+                        edit_task = st.text_area("Task Description *", value=problem_row['Task'], height=150)
+                    
+                    with col2:
+                        edit_priority = st.selectbox("Priority Level *", PRIORITIES,
+                                                    index=PRIORITIES.index(problem_row['Priority']) if problem_row['Priority'] in PRIORITIES else 0)
+                        
+                        edit_status = st.selectbox("Status *", STATUSES,
+                                                  index=STATUSES.index(problem_row['Status']) if problem_row['Status'] in STATUSES else 0)
+                        
+                        edit_notes = st.text_area("Additional Notes", 
+                                                 value=problem_row['Notes'] if problem_row['Notes'] != "N/A" else "", 
+                                                 height=150)
+                        
+                        edit_assigned = st.selectbox("Assigned Engineer", [""] + ENGINEERS,
+                                                    index=ENGINEERS.index(problem_row['Assigned_Engineer']) + 1 if problem_row['Assigned_Engineer'] in ENGINEERS else 0)
+                    
+                    st.markdown("**Current Spare Parts:**")
+                    if problem_row['Spare_Parts_Data'] != "N/A":
+                        st.text(problem_row['Spare_Parts_Data'])
+                    else:
+                        st.text("No spare parts listed")
+                    
+                    st.markdown("**Current Troubleshooting Steps:**")
+                    if problem_row['Troubleshooting_Steps'] != "N/A":
+                        st.text(problem_row['Troubleshooting_Steps'])
+                    else:
+                        st.text("No troubleshooting steps listed")
+                    
+                    if edit_status == "🟢 RESOLVED":
+                        st.markdown("---")
+                        st.subheader("Resolution Information")
+                        
+                        try:
+                            existing_resolved_date = datetime.strptime(problem_row['Date_Resolved'], "%d/%m/%Y") if problem_row['Date_Resolved'] else datetime.now()
+                        except:
+                            existing_resolved_date = datetime.now()
+                        
+                        edit_date_resolved = st.date_input("Date Resolved", value=existing_resolved_date)
+                        edit_resolution_notes = st.text_area("Resolution Notes", 
+                                                            value=problem_row['Resolution_Notes'] if problem_row['Resolution_Notes'] else "")
+                    
+                    st.markdown("---")
+                    save_edit = st.form_submit_button("💾 SAVE CHANGES", use_container_width=True)
+                    
+                    if save_edit:
+                        if not edit_line or not edit_task or not edit_submitted_by:
+                            st.error("⚠️ Please fill in all required fields (*)")
+                        else:
+                            date_resolved_str = ""
+                            resolution_notes_str = ""
+                            
+                            if edit_status == "🟢 RESOLVED":
+                                date_resolved_str = edit_date_resolved.strftime("%d/%m/%Y")
+                                resolution_notes_str = edit_resolution_notes
+                            
+                            updates = {
+                                2: edit_line,
+                                3: edit_date_submitted.strftime("%d/%m/%Y"),
+                                4: edit_task,
+                                6: edit_priority,
+                                7: edit_notes if edit_notes else "N/A",
+                                8: edit_status,
+                                9: edit_submitted_by,
+                                10: edit_expected_due.strftime("%d/%m/%Y"),
+                                12: edit_assigned,
+                                13: date_resolved_str,
+                                14: resolution_notes_str
+                            }
+                            
+                            update_problem(problem_index, updates, selected_site)
+                            st.success(f"✅ Problem #{problem_id} updated successfully!")
+                            show_floating_logos()
+                            st.rerun()
+            
+            with tab2:
+                st.subheader("⚠️ Delete Entry")
+                st.warning("This action cannot be undone!")
+                
+                st.markdown("**Entry to Delete:**")
+                col1, col2 = st.columns(2)
+                with col1:
+                    st.write(f"**ID:** {problem_row['Submission_ID']}")
+                    st.write(f"**Line:** {problem_row['Line_Number']}")
+                    st.write(f"**Task:** {problem_row['Task']}")
+                    st.write(f"**Priority:** {problem_row['Priority']}")
+                
+                with col2:
+                    st.write(f"**Status:** {problem_row['Status']}")
+                    st.write(f"**Submitted By:** {problem_row['Submitted_By_Engineer']}")
+                    st.write(f"**Date:** {problem_row['Date_Submitted']}")
+                
+                st.markdown("---")
+                
+                confirm_delete = st.checkbox("I confirm I want to delete this entry")
+                
+                if st.button("🗑️ DELETE ENTRY", type="primary", use_container_width=True, disabled=not confirm_delete):
+                    delete_problem(problem_index, selected_site)
+                    st.success(f"✅ Problem #{problem_id} deleted successfully!")
+                    st.rerun()
+
 elif page == "📜 History":
     st.title(f"📜 RESOLVED PROBLEMS HISTORY - {selected_site.upper()}")
     st.markdown("---")
@@ -540,8 +848,8 @@ elif page == "📜 History":
             with col1:
                 filter_line_hist = st.selectbox("Filter by Line", ["All"] + LINES, key="hist_line")
             with col2:
-                filter_engineer = st.selectbox("Filter by Assigned Engineer", 
-                                              ["All"] + list(resolved_df['Assigned_Engineer'].unique()))
+                unique_engineers = ["All"] + sorted([eng for eng in resolved_df['Assigned_Engineer'].unique() if eng])
+                filter_engineer = st.selectbox("Filter by Assigned Engineer", unique_engineers)
             with col3:
                 filter_priority_hist = st.selectbox("Filter by Priority", ["All"] + PRIORITIES, key="hist_priority")
             
@@ -558,6 +866,18 @@ elif page == "📜 History":
             if filtered_resolved.empty:
                 st.info("No resolved problems match your filters.")
             else:
+                # Download resolved problems as CSV
+                csv_resolved = filtered_resolved.to_csv(index=False)
+                st.download_button(
+                    label="📥 Download Resolved Problems (CSV)",
+                    data=csv_resolved,
+                    file_name=f"{selected_site}_resolved_problems_{datetime.now().strftime('%Y%m%d')}.csv",
+                    mime="text/csv",
+                    use_container_width=True
+                )
+                
+                st.markdown("---")
+                
                 for idx, row in filtered_resolved.iterrows():
                     with st.expander(f"🆔 ID #{row['Submission_ID']} - {row['Line_Number']} - {row['Task'][:60]}... - Priority: {row['Priority']}"):
                         col1, col2 = st.columns(2)
@@ -594,7 +914,7 @@ elif page == "📜 History":
                 
                 st.markdown("---")
                 st.subheader("📈 STATISTICS")
-                col1, col2, col3, col4 = st.columns(4)
+                col1, col2, col3 = st.columns(3)
                 
                 with col1:
                     total_resolved = len(filtered_resolved)
@@ -605,9 +925,5 @@ elif page == "📜 History":
                     st.metric("Critical Resolved", critical_resolved)
                 
                 with col3:
-                    top_engineer = filtered_resolved['Assigned_Engineer'].value_counts().idxmax() if not filtered_resolved.empty else "N/A"
-                    st.metric("Top Contributor", top_engineer)
-                
-                with col4:
                     high_priority = len(filtered_resolved[filtered_resolved['Priority'] == 'High'])
                     st.metric("High Priority Resolved", high_priority)
